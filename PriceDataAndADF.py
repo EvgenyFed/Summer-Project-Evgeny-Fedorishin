@@ -9,7 +9,7 @@ table = pd.read_csv(url)
 fixed_tickers = []
 sectors = {}
 
-for i in range(len(table)):
+for i in range(len(table)): #reformats tickers so that they can be used by yfinance
     ticker = table["Symbol"].iloc[i].replace(".", "-")
     sector = table["GICS Sector"].iloc[i]
     fixed_tickers.append(ticker)
@@ -17,13 +17,13 @@ for i in range(len(table)):
     if sector not in sectors:
         sectors[sector] = []
 
-    sectors[sector].append(ticker)
+    sectors[sector].append(ticker) #makes a list of all the sectors
 
 tickers = fixed_tickers
 
 
-end_date = datetime.today().strftime("%Y-%m-%d")
-start_date = (datetime.today() - timedelta(days=365)).strftime("%Y-%m-%d")
+end_date = datetime.today().strftime("%Y-%m-%d") 
+start_date = (datetime.today() - timedelta(days=365)).strftime("%Y-%m-%d") #makes start data exactly a year ago from now
 
 prices = yf.download(tickers, start = start_date, end = end_date, auto_adjust= True)["Close"]
 
