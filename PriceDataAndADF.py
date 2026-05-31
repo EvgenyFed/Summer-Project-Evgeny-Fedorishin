@@ -2,6 +2,8 @@ import yfinance as yf
 import pandas as pd
 from datetime import datetime, timedelta
 import time
+import numpy as np
+from statsmodels.tsa.stattools import adfuller
 
 url = "https://raw.githubusercontent.com/datasets/s-and-p-500-companies/main/data/constituents.csv"
 table = pd.read_csv(url)
@@ -29,48 +31,67 @@ prices = yf.download(tickers, start = start_date, end = end_date, auto_adjust= T
 
 beta = {}
 
+
+
 for sector in sectors: #used to cycle through sectors
     for j in range(len(sectors[sector])): #used to cycle through first tickers
         for k in range(j+1, len(sectors[sector])): #used to cycle through second tickers
-            returns1 = []
-            returns2 = []
-            numeratorSum = 0
-            denominatorSum = 0
-            sumOfNumerator = 0
-            sumOfDenominator = 0      
-            for i in range(1, len(prices)): #For each day, calculate the percentage price change for both stocks and store them in two lists. 
-                returns1.append((prices[sectors[sector][j]].iloc[i] - prices[sectors[sector][j]].iloc[i-1]) / prices[sectors[sector][j]].iloc[i-1]) #calculates percentage change between each day for first ticker
-                returns2.append((prices[sectors[sector][k]].iloc[i] - prices[sectors[sector][k]].iloc[i-1]) / prices[sectors[sector][k]].iloc[i-1]) #calculates percentage change between each day for second ticker
-            for z in range(len(returns1)):  #calculates hedgeratio between the tickers
-                numeratorSum = (returns1[z] * returns2[z]) + numeratorSum
-                denominatorSum = (returns1[z] ** 2) + denominatorSum 
-            hedgeRatio = numeratorSum / denominatorSum            
-            for z in range(0, len(returns1) - 1): #calculates Beta between the tickers
-                spread = returns1[z] - hedgeRatio * returns2[z]
-                spreadNextDay = returns1[z+1] - hedgeRatio * returns2[z+1]
-                sumOfNumerator = (spread * (spreadNextDay - spread)) + sumOfNumerator
-                sumOfDenominator = sumOfDenominator + (spread ** 2)
-            beta[sectors[sector][j], sectors[sector][k]] = sumOfNumerator / sumOfDenominator
 
+            ticker1 = sectors[sector][j]
+            ticker2 = sectors[sector][k]
 
+            logPrices1 = np.log(prices[ticker1].dropna())
+            logPrices2 = np.log(prices[ticker2].dropna())
 
+            if logPrices1.isin([np.inf, -np.inf]).any() or logPrices2.isin([np.inf, -np.inf]).any():
+                continue
 
-top10 = {}
+            if len(logPrices1) != len(logPrices2):
+                continue
 
-def getBeta(x): #returns the absolute value of a pair's beta from the top10 dictionary
-    return abs(top10[x])
+            if ticker1 not in prices.columns or ticker2 not in prices.columns:
+                continue
 
-for pair, value in beta.items(): #finds 10 largest beta values
-    if len(top10) < 10:
-        top10[pair] = value
-    else:
-        minPair = min(top10, key=getBeta)
-        if abs(value) > abs(top10[minPair]):
-            del top10[minPair]
-            top10[pair] = value
+            hedgeRatio = (logPrices1 * logPrices2).sum() / (logPrices2 ** 2).sum()
+            spread = logPrices1 - hedgeRatio * logPrices2
 
-for pair, value in top10.items(): #prints out the 10 highest beta values and their corresponding pairs
+            adfStat = adfuller(spread)[0]
+            beta[ticker1, ticker2] = adfStat
+
+def getAbsBeta(item): 
+    return abs(item[1])
+
+sortedBeta = sorted(beta.items(), key=getAbsBeta) 
+
+top10 = sortedBeta[-10:] #list of 10 most correlated pairs
+
+for pair, value in top10:
     print(pair, value)
+
+
+
+
+
+
+
+
+
+
+
+
+                
+
+
+
+
+
+
+
+
+
+
+
+
 
             
 
