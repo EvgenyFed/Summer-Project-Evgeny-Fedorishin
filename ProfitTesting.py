@@ -21,7 +21,7 @@ end_date = datetime.today().strftime("%Y-%m-%d")
 start_date = (datetime.today() - timedelta(days=365)).strftime("%Y-%m-%d") #makes start data exactly a year ago from now
 
 
-def profitTesting(ticker1, ticker2, start_date, end_date, time): #calculates the z-score given two tickers and a time period between buying and selling
+def profitTesting(ticker1, ticker2, start_date, end_date): #calculates the z-score between two tickers for a certain time period
     prices = yf.download([ticker1, ticker2], start=start_date, end=end_date, auto_adjust=True)["Close"]
 
     pair_prices = prices[[ticker1, ticker2]].dropna()
@@ -41,9 +41,13 @@ def profitTesting(ticker1, ticker2, start_date, end_date, time): #calculates the
 
     positiveZScores = {}
     negativeZScores = {}
+    allZScores = []
 
     for i in range(len(spreads)): #finds days with a z score above 2 and sorts them into positive and negative 
         zScore = float((spreads[i] - avgSpread) / standardDeviation)
+
+        allZScores.append(zScore)
+
         if abs(zScore) >= 2 and zScore >= 0:
             positiveZScores[i] = zScore #sell stock 1 and buy stock 2
         elif abs(zScore) >= 2 and zScore <= 0:
@@ -51,17 +55,25 @@ def profitTesting(ticker1, ticker2, start_date, end_date, time): #calculates the
     
     totalProfitPos = []
 
-    for key in positiveZScores.keys(): # goes through all the days with positive big z scores
-        if key + time >= len(pair_prices):
+    for key in positiveZScores.keys(): # goes through all the days with positive big z-scores
+        if key + 63 >= len(pair_prices):
+            continue
+        
+        daysPassed = 0
+
+        
+        sellingPrice1 = pair_prices[ticker1].iloc[key] # shorts stock 1
+        buyingPrice2 = pair_prices[ticker2].iloc[key] # goes long on stock 2
+
+        while daysPassed != 63 and allZScores[key+daysPassed] >= 0.05: # doesn't exit postions until 63 trading days(3 months) have passed or the z-score has reverted
+            daysPassed += 1
             continue
 
-        sellingPrice = pair_prices[ticker1].iloc[key] # shorts stock 1
-        buyingPrice = pair_prices[ticker1].iloc[key+time]
-        profit1 = (sellingPrice - buyingPrice) / sellingPrice
+        buyingPrice1 = pair_prices[ticker1].iloc[key+daysPassed] # buys back ticker 1 when either of those two conditions is met
+        profit1 = (sellingPrice1 - buyingPrice1) / sellingPrice1
 
-        buyingPrice = pair_prices[ticker2].iloc[key] # goes long on stock 2
-        sellingPrice = pair_prices[ticker2].iloc[key+time]
-        profit2 = ((sellingPrice - buyingPrice) / buyingPrice) * hedgeRatio
+        sellingPrice2 = pair_prices[ticker2].iloc[key+daysPassed] # sells ticker 2 when either of those two conditions is met
+        profit2 = ((sellingPrice2 - buyingPrice2) / buyingPrice2) * hedgeRatio
 
         totalProfitPos.append(((profit1 + profit2) / (1 + hedgeRatio)) * 100)
 
@@ -69,17 +81,24 @@ def profitTesting(ticker1, ticker2, start_date, end_date, time): #calculates the
     
     totalProfitNeg = []
 
-    for key in negativeZScores.keys(): # goes through all the days with negative big z scores
-        if key + time >= len(pair_prices):
+    for key in negativeZScores.keys(): # goes through all the days with negative big z-scores
+        if key + 63 >= len(pair_prices):
             continue
 
-        buyingPrice = pair_prices[ticker1].iloc[key] # goes long on stock 1
-        sellingPrice = pair_prices[ticker1].iloc[key+time]
-        profit1 = (sellingPrice - buyingPrice) / buyingPrice
+        daysPassed = 0
 
-        sellingPrice = pair_prices[ticker2].iloc[key] # shorts stock 2
-        buyingPrice = pair_prices[ticker2].iloc[key+time]
-        profit2 = ((sellingPrice - buyingPrice) / sellingPrice) * hedgeRatio
+        buyingPrice1 = pair_prices[ticker1].iloc[key] # goes long on stock 1
+        sellingPrice2 = pair_prices[ticker2].iloc[key] # shorts stock 2
+
+        while daysPassed != 63 and allZScores[key+daysPassed] <= -0.05: # doesn't exit postions until 63 trading days(3 months) have passed or the z-score has reverted
+            daysPassed += 1
+            continue
+
+        sellingPrice1 = pair_prices[ticker1].iloc[key+daysPassed] # sells ticker 1 when either of those two conditions is met
+        profit1 = (sellingPrice1 - buyingPrice1) / buyingPrice1
+
+        buyingPrice2 = pair_prices[ticker2].iloc[key+daysPassed] # buys back ticker 2 when either of those two conditions is met
+        profit2 = ((sellingPrice2 - buyingPrice2) / sellingPrice2) * hedgeRatio
 
         totalProfitNeg.append(((profit1 + profit2) / (1 + hedgeRatio)) * 100)
 
@@ -90,7 +109,7 @@ def profitTesting(ticker1, ticker2, start_date, end_date, time): #calculates the
 
 
 
-print(profitTesting('GILD','PFE',start_date, end_date, 14))
+print(profitTesting('GILD','PFE',start_date, end_date))
     
     
 
