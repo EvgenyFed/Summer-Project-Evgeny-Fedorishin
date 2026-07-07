@@ -24,8 +24,13 @@ start_date = (datetime.today() - timedelta(days=365)).strftime("%Y-%m-%d") #make
 def profitTesting(ticker1, ticker2, start_date, end_date, time): #calculates the z-score given two tickers and a time period between buying and selling
     prices = yf.download([ticker1, ticker2], start=start_date, end=end_date, auto_adjust=True)["Close"]
 
-    logPrices1 = np.log(prices[ticker1].dropna())
-    logPrices2 = np.log(prices[ticker2].dropna())
+    pair_prices = prices[[ticker1, ticker2]].dropna()
+
+    if (pair_prices <= 0).any().any():
+        return None, None
+
+    logPrices1 = np.log(pair_prices[ticker1])
+    logPrices2 = np.log(pair_prices[ticker2])
 
     hedgeRatio = (logPrices1 * logPrices2).sum() / (logPrices2 ** 2).sum()
 
@@ -47,15 +52,15 @@ def profitTesting(ticker1, ticker2, start_date, end_date, time): #calculates the
     totalProfitPos = []
 
     for key in positiveZScores.keys(): # goes through all the days with positive big z scores
-        if key + time >= len(prices):
+        if key + time >= len(pair_prices):
             continue
 
-        sellingPrice = prices[ticker1].iloc[key] # shorts stock 1
-        buyingPrice = prices[ticker1].iloc[key+time]
+        sellingPrice = pair_prices[ticker1].iloc[key] # shorts stock 1
+        buyingPrice = pair_prices[ticker1].iloc[key+time]
         profit1 = (sellingPrice - buyingPrice) / sellingPrice
 
-        buyingPrice = prices[ticker2].iloc[key] # goes long on stock 2
-        sellingPrice = prices[ticker2].iloc[key+time]
+        buyingPrice = pair_prices[ticker2].iloc[key] # goes long on stock 2
+        sellingPrice = pair_prices[ticker2].iloc[key+time]
         profit2 = ((sellingPrice - buyingPrice) / buyingPrice) * hedgeRatio
 
         totalProfitPos.append(((profit1 + profit2) / (1 + hedgeRatio)) * 100)
@@ -65,15 +70,15 @@ def profitTesting(ticker1, ticker2, start_date, end_date, time): #calculates the
     totalProfitNeg = []
 
     for key in negativeZScores.keys(): # goes through all the days with negative big z scores
-        if key + time >= len(prices):
+        if key + time >= len(pair_prices):
             continue
 
-        buyingPrice = prices[ticker1].iloc[key] # goes long on stock 1
-        sellingPrice = prices[ticker1].iloc[key+time]
+        buyingPrice = pair_prices[ticker1].iloc[key] # goes long on stock 1
+        sellingPrice = pair_prices[ticker1].iloc[key+time]
         profit1 = (sellingPrice - buyingPrice) / buyingPrice
 
-        sellingPrice = prices[ticker2].iloc[key] # shorts stock 2
-        buyingPrice = prices[ticker2].iloc[key+time]
+        sellingPrice = pair_prices[ticker2].iloc[key] # shorts stock 2
+        buyingPrice = pair_prices[ticker2].iloc[key+time]
         profit2 = ((sellingPrice - buyingPrice) / sellingPrice) * hedgeRatio
 
         totalProfitNeg.append(((profit1 + profit2) / (1 + hedgeRatio)) * 100)
@@ -85,7 +90,7 @@ def profitTesting(ticker1, ticker2, start_date, end_date, time): #calculates the
 
 
 
-print(profitTesting('JPM','BAC',start_date, end_date, 7))
+print(profitTesting('GILD','PFE',start_date, end_date, 14))
     
     
 
