@@ -30,6 +30,7 @@ start_date = (datetime.today() - timedelta(days=365)).strftime("%Y-%m-%d") #make
 prices = yf.download(tickers, start = start_date, end = end_date, auto_adjust= True)["Close"]
 
 beta = {}
+pvals ={}
 
 
 
@@ -40,30 +41,37 @@ for sector in sectors: #used to cycle through sectors
             ticker1 = sectors[sector][j]
             ticker2 = sectors[sector][k]
 
-            logPrices1 = np.log(prices[ticker1].dropna())
-            logPrices2 = np.log(prices[ticker2].dropna())
-
-            if logPrices1.isin([np.inf, -np.inf]).any() or logPrices2.isin([np.inf, -np.inf]).any():
-                continue
-
-            if len(logPrices1) != len(logPrices2):
-                continue
-
             if ticker1 not in prices.columns or ticker2 not in prices.columns:
                 continue
+
+            pair_prices = prices[[ticker1, ticker2]].dropna() #if price isn't available for one ticker on a certain date drops the other tickers price on that date as well in order to not scew the data
+            
+            if len(pair_prices) < 200: #created a minimum overlapping data requirment
+                continue
+
+            if (pair_prices <= 0).any().any():
+                continue
+
+            logPrices1 = np.log(pair_prices[ticker1])
+            logPrices2 = np.log(pair_prices[ticker2])
 
             hedgeRatio = (logPrices1 * logPrices2).sum() / (logPrices2 ** 2).sum()
             spread = logPrices1 - hedgeRatio * logPrices2
 
-            adfStat = adfuller(spread)[0]
-            beta[ticker1, ticker2] = adfStat
+            adfStat, pValue, _, _, _, _ = adfuller(spread) #extract the pValue as well now
 
-def getAbsBeta(item): 
-    return abs(item[1])
+            if pValue <= 0.05: #added the pValue check for signficance testing
+                beta[ticker1, ticker2] = adfStat
+                pvals[ticker1, ticker2] = pValue
 
-sortedBeta = sorted(beta.items(), key=getAbsBeta) 
+def getPValue(item): 
+    return pvals[item[0]]
 
-top10 = sortedBeta[-10:] #list of 10 most correlated pairs
+sortedBeta = sorted(beta.items(), key=getPValue)
+
+top10 = sortedBeta[:10]
+
+
 
 for pair, value in top10:
     print(pair, value)
