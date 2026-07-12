@@ -16,9 +16,8 @@ for i in range(len(table)): # reformats tickers so that they can be used by yfin
 
 tickers = fixed_tickers
 
-
 end_date = datetime.today().strftime("%Y-%m-%d") 
-start_date = (datetime.today() - timedelta(days=365)).strftime("%Y-%m-%d") # makes start data exactly a year ago from now
+start_date = (datetime.today() - timedelta(days=365)).strftime("%Y-%m-%d") #makes start data exactly a year ago from now
 
 
 def profitTesting(ticker1, ticker2, start_date, end_date): # calculates the z-score between two tickers for a certain time period
@@ -34,14 +33,22 @@ def profitTesting(ticker1, ticker2, start_date, end_date): # calculates the z-sc
     allZScores = [np.nan] * 59 #fills the first 59 values of the list with placeholders so that positive/negativeZScores and allZscores match in day count
     allHedgeRatios = [np.nan] * 59 #fills the first 59 values of the list with placeholders so that positive/negativeZScores and allHedheRatios match in day count
     
-    for i in range(59, len(pair_prices)): # starts at 60 because our rolling window is 60 days
+    for i in range(59, len(pair_prices)): # starts at 59 because our rolling window is 60 days
 
         logPrices1 = np.log(pair_prices[ticker1].iloc[i-59:i+1]) # only takes the log prices of the ticker in the last 60 days
         logPrices2 = np.log(pair_prices[ticker2].iloc[i-59:i+1]) # only takes the log prices of the ticker in the last 60 days
 
-        hedgeRatio = (logPrices1 * logPrices2).sum() / (logPrices2 ** 2).sum()
+        mean1 = logPrices1.mean() # now we use the new regression formula with the intercept not starting at 0
+        mean2 = logPrices2.mean()
 
-        spreads = (logPrices1 - hedgeRatio * logPrices2).tolist()
+        centered1 = logPrices1 - mean1
+        centered2 = logPrices2 - mean2
+
+        hedgeRatio = (centered1 * centered2).sum() / (centered2 ** 2).sum()
+
+        alpha = mean1 - hedgeRatio * mean2
+
+        spreads = (logPrices1 - alpha - hedgeRatio * logPrices2).tolist()
 
         avgSpread = np.mean(spreads)
         standardDeviation = np.std(spreads) 
@@ -75,7 +82,7 @@ def profitTesting(ticker1, ticker2, start_date, end_date): # calculates the z-sc
         sellingPrice1 = pair_prices[ticker1].iloc[key] # shorts stock 1
         buyingPrice2 = pair_prices[ticker2].iloc[key] # goes long on stock 2
 
-        while daysPassed != 63 and allZScores[key+daysPassed] >= 0.05: # doesn't exit postions until 63 trading days(3 months) have passed or the z-score has reverted
+        while daysPassed != 63 and allZScores[key+daysPassed] >= 0.5: # doesn't exit postions until 63 trading days(3 months) have passed or the z-score has reverted
             daysPassed += 1
             continue
 
@@ -87,7 +94,7 @@ def profitTesting(ticker1, ticker2, start_date, end_date): # calculates the z-sc
         sellingPrice2 = pair_prices[ticker2].iloc[key+daysPassed] # sells ticker 2 when either of those two conditions is met
         profit2 = ((sellingPrice2 - buyingPrice2) / buyingPrice2) * allHedgeRatios[key]
 
-        totalProfitPos.append(((profit1 + profit2) / (1 + allHedgeRatios[key])) * 100)
+        totalProfitPos.append(((profit1 + profit2) / (1 + abs(allHedgeRatios[key]))) * 100)
 
     meanProfitPos = np.mean(totalProfitPos)
     
@@ -104,7 +111,7 @@ def profitTesting(ticker1, ticker2, start_date, end_date): # calculates the z-sc
         buyingPrice1 = pair_prices[ticker1].iloc[key] # goes long on stock 1
         sellingPrice2 = pair_prices[ticker2].iloc[key] # shorts stock 2
 
-        while daysPassed != 63 and allZScores[key+daysPassed] <= -0.05: # doesn't exit postions until 63 trading days(3 months) have passed or the z-score has reverted
+        while daysPassed != 63 and allZScores[key+daysPassed] <= -0.5: # doesn't exit postions until 63 trading days(3 months) have passed or the z-score has reverted
             daysPassed += 1
             continue
         
@@ -116,16 +123,16 @@ def profitTesting(ticker1, ticker2, start_date, end_date): # calculates the z-sc
         buyingPrice2 = pair_prices[ticker2].iloc[key+daysPassed] # buys back ticker 2 when either of those two conditions is met
         profit2 = ((sellingPrice2 - buyingPrice2) / sellingPrice2) * allHedgeRatios[key]
 
-        totalProfitNeg.append(((profit1 + profit2) / (1 + allHedgeRatios[key])) * 100)
+        totalProfitNeg.append(((profit1 + profit2) / (1 + abs(allHedgeRatios[key]))) * 100)
 
     meanProfitNeg = np.mean(totalProfitNeg)
 
-    return float(meanProfitPos), float(meanProfitNeg)
+    return float(meanProfitPos), float(meanProfitNeg), len(totalProfitPos), len(totalProfitNeg) #added length to see how many trades were actually completed so that we can see how realiable the strategy actually is
 
 
 
 
-print(profitTesting('GILD','PFE',start_date, end_date))
+print(profitTesting('MSCI','PYPL',start_date, end_date))
     
     
 
