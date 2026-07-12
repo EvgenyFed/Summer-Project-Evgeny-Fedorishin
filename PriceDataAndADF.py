@@ -24,8 +24,8 @@ for i in range(len(table)): #reformats tickers so that they can be used by yfina
 tickers = fixed_tickers
 
 
-end_date = datetime.today().strftime("%Y-%m-%d") 
-start_date = (datetime.today() - timedelta(days=365)).strftime("%Y-%m-%d") #makes start data exactly a year ago from now
+end_date = (datetime.today() - timedelta(days=365)).strftime("%Y-%m-%d")  # makes the end data exactly 1 year ago from now
+start_date = (datetime.today() - timedelta(days=365*2)).strftime("%Y-%m-%d") # makes start data exactly 2 years ago from now
 
 prices = yf.download(tickers, start = start_date, end = end_date, auto_adjust= True)["Close"]
 
@@ -55,10 +55,20 @@ for sector in sectors: #used to cycle through sectors
             logPrices1 = np.log(pair_prices[ticker1])
             logPrices2 = np.log(pair_prices[ticker2])
 
-            hedgeRatio = (logPrices1 * logPrices2).sum() / (logPrices2 ** 2).sum()
-            spread = logPrices1 - hedgeRatio * logPrices2
 
-            adfStat, pValue, _, _, _, _ = adfuller(spread) #extract the pValue as well now
+            mean1 = logPrices1.mean() # now we use the new regression formula with the intercept not starting at 0
+            mean2 = logPrices2.mean()
+
+            centered1 = logPrices1 - mean1
+            centered2 = logPrices2 - mean2
+
+            hedgeRatio = (centered1 * centered2).sum() / (centered2 ** 2).sum()
+
+            alpha = mean1 - hedgeRatio * mean2
+
+            spread = (logPrices1 - alpha - hedgeRatio * logPrices2)
+            
+            adfStat, pValue, _, _, _, _ = adfuller(spread) #extracts the pValue as well now
 
             if pValue <= 0.05: #added the pValue check for signficance testing
                 beta[ticker1, ticker2] = adfStat
