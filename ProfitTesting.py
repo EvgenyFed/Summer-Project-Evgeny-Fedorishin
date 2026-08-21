@@ -97,8 +97,9 @@ def profitTesting(ticker1, ticker2, pair_prices, start_date): # calculates the z
 
     freeUntil = -1 #allows us to skip days where our position is already opened to avoid bying into the same postion on consecutive days
 
-    for key in sorted(allSignals.keys()): # goes through every signal day in date order regardless of direction
+    dailyPnL = pd.Series(0.0, index=pair_prices.index) # how much the pair gained or lost each day, indexed by date so pairs can be lined up later, stays 0 when no trade is open
 
+    for key in sorted(allSignals.keys()): # goes through every signal day in date order regardless of direction
         if key + maxHoldDays >= len(pair_prices) or key < freeUntil:
             continue
 
@@ -123,6 +124,17 @@ def profitTesting(ticker1, ticker2, pair_prices, start_date): # calculates the z
 
             totalProfitPos.append(((profit1 + profit2) / (1 + abs(allHedgeRatios[key]))) * 100)
 
+            cumulative = 0.0
+
+            for d in range(key + 1, key + daysPassed + 1): # walks through each day the trade was open to record its daily change
+                runningProfit1 = (sellingPrice1 - pair_prices[ticker1].iloc[d]) / sellingPrice1
+                runningProfit2 = ((pair_prices[ticker2].iloc[d] - buyingPrice2) / buyingPrice2) * allHedgeRatios[key]
+
+                newCumulative = ((runningProfit1 + runningProfit2) / (1 + abs(allHedgeRatios[key]))) * 100
+
+                dailyPnL.iloc[d] = newCumulative - cumulative # only the change since yesterday, not the running total
+                cumulative = newCumulative
+
         else: # negative z-score so long stock 1 and short stock 2
 
             buyingPrice1 = pair_prices[ticker1].iloc[key] # goes long on stock 1
@@ -142,10 +154,21 @@ def profitTesting(ticker1, ticker2, pair_prices, start_date): # calculates the z
 
             totalProfitNeg.append(((profit1 + profit2) / (1 + abs(allHedgeRatios[key]))) * 100)
 
+            cumulative = 0.0
+
+            for d in range(key + 1, key + daysPassed + 1): # walks through each day the trade was open to record its daily change
+                runningProfit1 = (pair_prices[ticker1].iloc[d] - buyingPrice1) / buyingPrice1
+                runningProfit2 = ((sellingPrice2 - pair_prices[ticker2].iloc[d]) / sellingPrice2) * allHedgeRatios[key]
+
+                newCumulative = ((runningProfit1 + runningProfit2) / (1 + abs(allHedgeRatios[key]))) * 100
+
+                dailyPnL.iloc[d] = newCumulative - cumulative # only the change since yesterday, not the running total
+                cumulative = newCumulative
+
     meanProfitPos = np.mean(totalProfitPos) if totalProfitPos else 0.0
     meanProfitNeg = np.mean(totalProfitNeg) if totalProfitNeg else 0.0
 
-    return float(meanProfitPos), float(meanProfitNeg), len(totalProfitPos), len(totalProfitNeg), deathDay, len(pair_prices) #added length to see how many trades were actually completed so that we can see how realiable the strategy actually is, plus deathDay to check the recheck logic
+    return float(meanProfitPos), float(meanProfitNeg), len(totalProfitPos), len(totalProfitNeg), deathDay, len(pair_prices), dailyPnL #added length to see how many trades were actually completed so that we can see how realiable the strategy actually is, plus deathDay to check the recheck logic and dailyPnL for the equity curve
 
 if __name__ == "__main__": # only runs when this file is executed directly, not when it's imported
     downloadStart = (pd.to_datetime(start_date) - pd.DateOffset(years=recheckLookbackYears)).strftime("%Y-%m-%d") # pulls extra history so the first recheck has a full lookback behind it
