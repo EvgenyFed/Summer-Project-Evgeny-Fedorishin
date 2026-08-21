@@ -5,6 +5,12 @@ import time
 import numpy as np
 from statsmodels.tsa.stattools import adfuller
 
+yearsBack = 2         # how far back the cointegration window starts
+yearsForwardGap = 1   # how many years ago the window ends (i.e. leaves room for the backtest)
+pValueCutoff = 0.05   # how strict the cointegration test is
+minObsFraction = 0.8  # required fraction of expected trading days
+topN = 10             # how many pairs to keep
+
 url = "https://raw.githubusercontent.com/datasets/s-and-p-500-companies/main/data/constituents.csv"
 table = pd.read_csv(url)
 
@@ -24,8 +30,11 @@ for i in range(len(table)): #reformats tickers so that they can be used by yfina
 tickers = fixed_tickers
 
 
-end_date = (datetime.today() - timedelta(days=365)).strftime("%Y-%m-%d")  # makes the end data exactly 1 year ago from now
-start_date = (datetime.today() - timedelta(days=365*2)).strftime("%Y-%m-%d") # makes start data exactly 2 years ago from now
+end_date = (pd.Timestamp.today() - pd.DateOffset(years=yearsForwardGap)).strftime("%Y-%m-%d") # makes the end date yearsForwardGap years ago from now
+start_date = (pd.Timestamp.today() - pd.DateOffset(years=yearsBack)).strftime("%Y-%m-%d") # makes start date yearsBack years ago from now
+min_obs = int((pd.to_datetime(end_date) - pd.to_datetime(start_date)).days / 365 * 252 * 0.8) # scales the overlapping data requirment to the number of days we sample
+
+
 
 prices = yf.download(tickers, start = start_date, end = end_date, auto_adjust= True)["Close"]
 
@@ -46,7 +55,7 @@ for sector in sectors: #used to cycle through sectors
 
             pair_prices = prices[[ticker1, ticker2]].dropna() #if price isn't available for one ticker on a certain date drops the other tickers price on that date as well in order to not scew the data
             
-            if len(pair_prices) < 200: #created a minimum overlapping data requirment
+            if len(pair_prices) < min_obs: #created a minimum overlapping data requirment
                 continue
 
             if (pair_prices <= 0).any().any():
@@ -70,7 +79,7 @@ for sector in sectors: #used to cycle through sectors
             
             adfStat, pValue, _, _, _, _ = adfuller(spread) #extracts the pValue as well now
 
-            if pValue <= 0.05: #added the pValue check for signficance testing
+            if pValue <= pValueCutoff: #added the pValue check for signficance testing
                 beta[ticker1, ticker2] = adfStat
                 pvals[ticker1, ticker2] = pValue
 
@@ -79,9 +88,7 @@ def getPValue(item):
 
 sortedBeta = sorted(beta.items(), key=getPValue)
 
-top10 = sortedBeta[:10]
-
-
+top10 = sortedBeta[:topN]
 
 for pair, value in top10:
     print(pair, value)
