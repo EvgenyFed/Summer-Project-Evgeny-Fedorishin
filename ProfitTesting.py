@@ -9,33 +9,15 @@ entryZScore = 2       # how far the spread must diverge before opening a trade
 exitZScore = 0.5      # how close to zero the z-score must return before closing
 maxHoldDays = 63      # hard cap on how long a position stays open
 backtestYears = 1     # how far back the backtest starts (match yearsForwardGap in the screener)
-recheckMonths = 2          # months between follow-up cointegration tests
+recheckMonths = 1          # months between follow-up cointegration tests
 recheckLookbackYears = 1   # how much trailing history each recheck tests on
 pValueCutoff = 0.05        # recheck fails if the ADF p-value exceeds this
 
-url = "https://raw.githubusercontent.com/datasets/s-and-p-500-companies/main/data/constituents.csv"
-table = pd.read_csv(url)
-
-fixed_tickers = []
-
-for i in range(len(table)): # reformats tickers so that they can be used by yfinance
-    ticker = table["Symbol"].iloc[i].replace(".", "-")
-    sector = table["GICS Sector"].iloc[i]
-    fixed_tickers.append(ticker)
-
-tickers = fixed_tickers
-
-end_date = datetime.today().strftime("%Y-%m-%d") 
+end_date = datetime.today().strftime("%Y-%m-%d")
 start_date = (pd.Timestamp.today() - pd.DateOffset(years=backtestYears)).strftime("%Y-%m-%d") #makes start date backtestYears ago from now
 
 
-def profitTesting(ticker1, ticker2, start_date, end_date): # calculates the z-score between two tickers for a certain time period
-    downloadStart = (pd.to_datetime(start_date) - pd.DateOffset(years=recheckLookbackYears)).strftime("%Y-%m-%d") # pulls extra history so the first recheck has a full lookback behind it
-
-    prices = yf.download([ticker1, ticker2], start=downloadStart, end=end_date, auto_adjust=True)["Close"]
-
-    pair_prices = prices[[ticker1, ticker2]].dropna()
-
+def profitTesting(ticker1, ticker2, pair_prices, start_date): # calculates the z-score between two tickers over prices passed in from outside
     backtestStart = pair_prices.index.searchsorted(pd.to_datetime(start_date)) # converts start_date into a row number so we know where the extra downloaded year ends and the tradeable period begins
 
     if (pair_prices <= 0).any().any():
@@ -106,69 +88,73 @@ def profitTesting(ticker1, ticker2, start_date, end_date): # calculates the z-sc
         elif abs(allZScores[i]) >= entryZScore and allZScores[i] <= 0:
             negativeZScores[i] = allZScores[i] # buy stock 1 and sell stock 2
     
+    allSignals = {}
+    allSignals.update(positiveZScores)
+    allSignals.update(negativeZScores) # merges both directions so one pass can walk them in date order
+
     totalProfitPos = []
+    totalProfitNeg = []
 
     freeUntil = -1 #allows us to skip days where our position is already opened to avoid bying into the same postion on consecutive days
 
-    for key in positiveZScores.keys(): # goes through all the days with positive big z-scores
+    for key in sorted(allSignals.keys()): # goes through every signal day in date order regardless of direction
+
         if key + maxHoldDays >= len(pair_prices) or key < freeUntil:
             continue
-        
+
         daysPassed = 0
 
-        
-        sellingPrice1 = pair_prices[ticker1].iloc[key] # shorts stock 1
-        buyingPrice2 = pair_prices[ticker2].iloc[key] # goes long on stock 2
+        if allSignals[key] >= 0: # positive z-score so short stock 1 and long stock 2
 
-        while daysPassed != maxHoldDays and key + daysPassed < deathDay and allZScores[key+daysPassed] >= exitZScore: # doesn't exit positions until maxHoldDays have passed or the z-score has reverted also exits if the pair fails its cointegration recheck
-            daysPassed += 1
-            continue
+            sellingPrice1 = pair_prices[ticker1].iloc[key] # shorts stock 1
+            buyingPrice2 = pair_prices[ticker2].iloc[key] # goes long on stock 2
 
-        freeUntil = key + daysPassed
+            while daysPassed != maxHoldDays and key + daysPassed < deathDay and allZScores[key+daysPassed] >= exitZScore: # doesn't exit postions until 63 trading days(3 months) have passed or the z-score has reverted
+                daysPassed += 1
+                continue
 
-        buyingPrice1 = pair_prices[ticker1].iloc[key+daysPassed] # buys back ticker 1 when either of those two conditions is met
-        profit1 = (sellingPrice1 - buyingPrice1) / sellingPrice1
+            freeUntil = key + daysPassed
 
-        sellingPrice2 = pair_prices[ticker2].iloc[key+daysPassed] # sells ticker 2 when either of those two conditions is met
-        profit2 = ((sellingPrice2 - buyingPrice2) / buyingPrice2) * allHedgeRatios[key]
+            buyingPrice1 = pair_prices[ticker1].iloc[key+daysPassed] # buys back ticker 1 when either of those two conditions is met
+            profit1 = (sellingPrice1 - buyingPrice1) / sellingPrice1
 
-        totalProfitPos.append(((profit1 + profit2) / (1 + abs(allHedgeRatios[key]))) * 100)
+            sellingPrice2 = pair_prices[ticker2].iloc[key+daysPassed] # sells ticker 2 when either of those two conditions is met
+            profit2 = ((sellingPrice2 - buyingPrice2) / buyingPrice2) * allHedgeRatios[key]
+
+            totalProfitPos.append(((profit1 + profit2) / (1 + abs(allHedgeRatios[key]))) * 100)
+
+        else: # negative z-score so long stock 1 and short stock 2
+
+            buyingPrice1 = pair_prices[ticker1].iloc[key] # goes long on stock 1
+            sellingPrice2 = pair_prices[ticker2].iloc[key] # shorts stock 2
+
+            while daysPassed != maxHoldDays and key + daysPassed < deathDay and allZScores[key+daysPassed] <= -exitZScore: # doesn't exit postions until 63 trading days(3 months) have passed or the z-score has reverted
+                daysPassed += 1
+                continue
+
+            freeUntil = key + daysPassed
+
+            sellingPrice1 = pair_prices[ticker1].iloc[key+daysPassed] # sells ticker 1 when either of those two conditions is met
+            profit1 = (sellingPrice1 - buyingPrice1) / buyingPrice1
+
+            buyingPrice2 = pair_prices[ticker2].iloc[key+daysPassed] # buys back ticker 2 when either of those two conditions is met
+            profit2 = ((sellingPrice2 - buyingPrice2) / sellingPrice2) * allHedgeRatios[key]
+
+            totalProfitNeg.append(((profit1 + profit2) / (1 + abs(allHedgeRatios[key]))) * 100)
 
     meanProfitPos = np.mean(totalProfitPos) if totalProfitPos else 0.0
-    
-    totalProfitNeg = []
-
-    freeUntil = -1 # allows us to skip days where our position is already opened to avoid bying into the same postion on consecutive days
-
-    for key in negativeZScores.keys(): # goes through all the days with negative big z-scores
-        if key + maxHoldDays >= len(pair_prices) or key < freeUntil:
-            continue
-
-        daysPassed = 0
-
-        buyingPrice1 = pair_prices[ticker1].iloc[key] # goes long on stock 1
-        sellingPrice2 = pair_prices[ticker2].iloc[key] # shorts stock 2
-
-        while daysPassed != maxHoldDays and key + daysPassed < deathDay and allZScores[key+daysPassed] <= -exitZScore: # doesn't exit positions until maxHoldDays have passed or the z-score has reverted also exits if the pair fails its cointegration recheck
-        
-            daysPassed += 1
-            continue
-        
-        freeUntil = key + daysPassed
-
-        sellingPrice1 = pair_prices[ticker1].iloc[key+daysPassed] # sells ticker 1 when either of those two conditions is met
-        profit1 = (sellingPrice1 - buyingPrice1) / buyingPrice1
-
-        buyingPrice2 = pair_prices[ticker2].iloc[key+daysPassed] # buys back ticker 2 when either of those two conditions is met
-        profit2 = ((sellingPrice2 - buyingPrice2) / sellingPrice2) * allHedgeRatios[key]
-
-        totalProfitNeg.append(((profit1 + profit2) / (1 + abs(allHedgeRatios[key]))) * 100)
-
     meanProfitNeg = np.mean(totalProfitNeg) if totalProfitNeg else 0.0
 
     return float(meanProfitPos), float(meanProfitNeg), len(totalProfitPos), len(totalProfitNeg), deathDay, len(pair_prices) #added length to see how many trades were actually completed so that we can see how realiable the strategy actually is, plus deathDay to check the recheck logic
 
-print(profitTesting('MSCI','PYPL',start_date, end_date))
+if __name__ == "__main__": # only runs when this file is executed directly, not when it's imported
+    downloadStart = (pd.to_datetime(start_date) - pd.DateOffset(years=recheckLookbackYears)).strftime("%Y-%m-%d") # pulls extra history so the first recheck has a full lookback behind it
+
+    prices = yf.download(['MSCI','PYPL'], start=downloadStart, end=end_date, auto_adjust=True)["Close"]
+
+    pair_prices = prices[['MSCI','PYPL']].dropna()
+
+    print(profitTesting('MSCI','PYPL', pair_prices, start_date))
 
 
 
