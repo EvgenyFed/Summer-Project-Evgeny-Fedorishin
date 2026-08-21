@@ -32,7 +32,7 @@ tickers = fixed_tickers
 
 end_date = (pd.Timestamp.today() - pd.DateOffset(years=yearsForwardGap)).strftime("%Y-%m-%d") # makes the end date yearsForwardGap years ago from now
 start_date = (pd.Timestamp.today() - pd.DateOffset(years=yearsBack)).strftime("%Y-%m-%d") # makes start date yearsBack years ago from now
-min_obs = int((pd.to_datetime(end_date) - pd.to_datetime(start_date)).days / 365 * 252 * 0.8) # scales the overlapping data requirment to the number of days we sample
+minObs = int((pd.to_datetime(end_date) - pd.to_datetime(start_date)).days / 365 * 252 * minObsFraction) # scales the overlapping data requirment to the number of days we sample
 
 
 
@@ -55,7 +55,7 @@ for sector in sectors: #used to cycle through sectors
 
             pair_prices = prices[[ticker1, ticker2]].dropna() #if price isn't available for one ticker on a certain date drops the other tickers price on that date as well in order to not scew the data
             
-            if len(pair_prices) < min_obs: #created a minimum overlapping data requirment
+            if len(pair_prices) < minObs: #created a minimum overlapping data requirment
                 continue
 
             if (pair_prices <= 0).any().any():
