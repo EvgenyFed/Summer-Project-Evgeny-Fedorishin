@@ -17,7 +17,7 @@ pairs = [ # hardcoded for now, will come from PriceDataAndADF later
     ("REG", "SBAC"),
 ]
 
-downloadStart = (pd.to_datetime(start_date) - pd.DateOffset(years=recheckLookbackYears)).strftime("%Y-%m-%d") # same lead-in the backtest needs for its rechecks
+downloadStart = (pd.to_datetime(start_date) - pd.DateOffset(years=recheckLookbackYears)).strftime("%Y-%m-%d")
 
 allTickers = sorted(set([t for pair in pairs for t in pair])) # every ticker across every pair, deduplicated
 
@@ -39,7 +39,7 @@ for ticker1, ticker2 in pairs:
         "tradesPos": tradesPos,
         "tradesNeg": tradesNeg,
         "died": "no" if deathDay == totalDays else "day " + str(deathDay),
-        "sumDailyPnL": dailyPnL.sum(), # should match the total of all trade profits if the daily curve is right
+        "sumDailyPnL": dailyPnL.sum(), 
         "activeDays": int((dailyPnL != 0).sum()), # how many days the pair actually had a position open
     })
 
@@ -65,17 +65,19 @@ maxDrawdown = drawdowns.min()
 
 print()
 print("final equity:", round(equity.iloc[-1], 3))
-print("total return %:", round(equity.iloc[-1] - 100.0, 3))
-print("max drawdown %:", round(maxDrawdown, 3))
-print("worst day:", drawdowns.idxmin().strftime("%Y-%m-%d"))
+print("total return:", f"{equity.iloc[-1] - 100.0:+.3f}%")
+print("max drawdown:", f"{maxDrawdown:+.3f}%")
+print("deepest below peak on:", drawdowns.idxmin().strftime("%Y-%m-%d"))
+print("worst single day:", f"{portfolioDaily.min():+.3f}%", "on", portfolioDaily.idxmin().strftime("%Y-%m-%d"))
+print("best single day:", f"{portfolioDaily.max():+.3f}%", "on", portfolioDaily.idxmax().strftime("%Y-%m-%d"))
 
 dailyVol = portfolioDaily.std() # how much the account's daily move typically varies
 
-annualVol = dailyVol * np.sqrt(252) # scaled up to a yearly figure so it can be compared to other strategies
+annualVol = dailyVol * np.sqrt(252) # scales the volatility to a yearly figure in order to later calculate the sharpe ratio 
 
 tradingDays = len(portfolioDaily)
 
-annualReturn = (equity.iloc[-1] - 100.0) * (252 / tradingDays) # scales the return to a full year in case the backtest isn't exactly one
+annualReturn = (equity.iloc[-1] - 100.0) * (252 / tradingDays) # scales the return to a yearly figure in order to later calculate the sharpe ratio
 
 sharpe = annualReturn / annualVol if annualVol > 0 else 0.0 # return earned per unit of volatility
 
@@ -83,6 +85,6 @@ wins = len([t for t in allTrades if t > 0])
 
 winRate = wins / len(allTrades) * 100 if allTrades else 0.0
 
-print("annualised volatility %:", round(annualVol, 3))
+print("annualised volatility:", str(round(annualVol, 3)) + "%")
 print("sharpe ratio:", round(sharpe, 3))
-print("win rate %:", round(winRate, 1), "(" + str(wins) + " of " + str(len(allTrades)) + " trades)")
+print("win rate:", str(round(winRate, 1)) + "%", "(" + str(wins) + " of " + str(len(allTrades)) + " trades)")
