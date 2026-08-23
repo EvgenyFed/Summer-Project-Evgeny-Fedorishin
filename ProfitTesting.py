@@ -9,7 +9,7 @@ entryZScore = 2       # how far the spread must diverge before opening a trade
 exitZScore = 0.5      # how close to zero the z-score must return before closing
 maxHoldDays = 63      # hard cap on how long a position stays open
 backtestYears = 1     # how far back the backtest starts (match yearsForwardGap in the screener)
-recheckMonths = 1          # months between follow-up cointegration tests
+recheckMonths = 2          # months between follow-up cointegration tests
 recheckLookbackYears = 1   # how much trailing history each recheck tests on
 pValueCutoff = 0.05        # recheck fails if the ADF p-value exceeds this
 
