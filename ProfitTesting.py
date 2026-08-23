@@ -14,7 +14,7 @@ recheckLookbackYears = 1   # how much trailing history each recheck tests on
 pValueCutoff = 0.05        # recheck fails if the ADF p-value exceeds this
 
 end_date = datetime.today().strftime("%Y-%m-%d")
-start_date = (pd.Timestamp.today() - pd.DateOffset(years=backtestYears)).strftime("%Y-%m-%d") #makes start date backtestYears ago from now
+start_date = (pd.Timestamp.today() - pd.DateOffset(years=backtestYears)).strftime("%Y-%m-%d") # makes start date backtestYears ago from now
 
 
 def profitTesting(ticker1, ticker2, pair_prices, start_date): # calculates the z-score between two tickers over prices passed in from outside
