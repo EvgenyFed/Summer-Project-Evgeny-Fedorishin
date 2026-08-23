@@ -25,11 +25,12 @@ prices = yf.download(allTickers, start=downloadStart, end=end_date, auto_adjust=
 
 results = []
 allCurves = {} # each pair's daily pnl series, collected so they can be combined into one portfolio
+allTrades = [] # every individual trade profit across every pair, for the win rate
 
 for ticker1, ticker2 in pairs:
     pair_prices = prices[[ticker1, ticker2]].dropna() # slices the shared download down to this pair
 
-    meanProfitPos, meanProfitNeg, tradesPos, tradesNeg, deathDay, totalDays, dailyPnL = profitTesting(ticker1, ticker2, pair_prices, start_date)
+    meanProfitPos, meanProfitNeg, tradesPos, tradesNeg, deathDay, totalDays, dailyPnL, tradeProfits = profitTesting(ticker1, ticker2, pair_prices, start_date)
 
     results.append({
         "pair": ticker1 + "/" + ticker2,
@@ -43,6 +44,8 @@ for ticker1, ticker2 in pairs:
     })
 
     allCurves[ticker1 + "/" + ticker2] = dailyPnL
+
+    allTrades.extend(tradeProfits)
 
 resultsTable = pd.DataFrame(results)
 
@@ -65,3 +68,21 @@ print("final equity:", round(equity.iloc[-1], 3))
 print("total return %:", round(equity.iloc[-1] - 100.0, 3))
 print("max drawdown %:", round(maxDrawdown, 3))
 print("worst day:", drawdowns.idxmin().strftime("%Y-%m-%d"))
+
+dailyVol = portfolioDaily.std() # how much the account's daily move typically varies
+
+annualVol = dailyVol * np.sqrt(252) # scaled up to a yearly figure so it can be compared to other strategies
+
+tradingDays = len(portfolioDaily)
+
+annualReturn = (equity.iloc[-1] - 100.0) * (252 / tradingDays) # scales the return to a full year in case the backtest isn't exactly one
+
+sharpe = annualReturn / annualVol if annualVol > 0 else 0.0 # return earned per unit of volatility
+
+wins = len([t for t in allTrades if t > 0])
+
+winRate = wins / len(allTrades) * 100 if allTrades else 0.0
+
+print("annualised volatility %:", round(annualVol, 3))
+print("sharpe ratio:", round(sharpe, 3))
+print("win rate %:", round(winRate, 1), "(" + str(wins) + " of " + str(len(allTrades)) + " trades)")
