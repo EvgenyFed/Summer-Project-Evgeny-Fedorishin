@@ -168,7 +168,7 @@ def profitTesting(ticker1, ticker2, pair_prices, start_date): # calculates the z
     meanProfitPos = np.mean(totalProfitPos) if totalProfitPos else 0.0
     meanProfitNeg = np.mean(totalProfitNeg) if totalProfitNeg else 0.0
 
-    return float(meanProfitPos), float(meanProfitNeg), len(totalProfitPos), len(totalProfitNeg), deathDay, len(pair_prices), dailyPnL #added length to see how many trades were actually completed so that we can see how realiable the strategy actually is, plus deathDay to check the recheck logic and dailyPnL for the equity curve
+    return float(meanProfitPos), float(meanProfitNeg), len(totalProfitPos), len(totalProfitNeg), deathDay, len(pair_prices), dailyPnL, totalProfitPos + totalProfitNeg #added length to see how many trades were actually completed so that we can see how realiable the strategy actually is, plus deathDay to check the recheck logic, dailyPnL for the equity curve and every individual trade profit for the win rate
 
 if __name__ == "__main__": # only runs when this file is executed directly, not when it's imported
     downloadStart = (pd.to_datetime(start_date) - pd.DateOffset(years=recheckLookbackYears)).strftime("%Y-%m-%d") # pulls extra history so the first recheck has a full lookback behind it
