@@ -1,90 +1,97 @@
-import yfinance as yf
 import pandas as pd
 import numpy as np
+import os
 
-from ProfitTesting import profitTesting, start_date, end_date, recheckLookbackYears
+from ProfitTesting import profitTesting, recheckLookbackYears
+from PriceDataAndADF import screenPairs
 
-pairs = [ # hardcoded for now, will come from PriceDataAndADF later
-    ("EG", "V"),
-    ("MSCI", "PYPL"),
-    ("PNR", "VRT"),
-    ("KEY", "RF"),
-    ("EG", "MA"),
-    ("EG", "JPM"),
-    ("EG", "HOOD"),
-    ("FDX", "JBHT"),
-    ("LYV", "NWS"),
-    ("REG", "SBAC"),
-]
+folder = os.path.dirname(os.path.abspath(__file__))
 
-downloadStart = (pd.to_datetime(start_date) - pd.DateOffset(years=recheckLookbackYears)).strftime("%Y-%m-%d")
+screenYears = 2   # length of each screening window
+tradeYears = 1    # length of each trading window
+folds = 8         # how many times we screen then trade, rolling forward through history
 
-allTickers = sorted(set([t for pair in pairs for t in pair])) # every ticker across every pair, deduplicated
+allPrices = pd.read_pickle(os.path.join(folder, "prices.pkl"))
 
-prices = yf.download(allTickers, start=downloadStart, end=end_date, auto_adjust=True)["Close"] # one download for all pairs instead of one per pair
+today = pd.Timestamp.today()
 
-results = []
-allCurves = {} # each pair's daily pnl series, collected so they can be combined into one portfolio
-allTrades = [] # every individual trade profit across every pair, for the win rate
+foldSummaries = []
+allPortfolioDaily = [] # each fold's daily portfolio moves, stitched together at the end
+allTrades = []
 
-for ticker1, ticker2 in pairs:
-    pair_prices = prices[[ticker1, ticker2]].dropna() # slices the shared download down to this pair
+for f in range(folds):
+    screenStart = (today - pd.DateOffset(years=screenYears + tradeYears + (folds - 1 - f))).strftime("%Y-%m-%d")
+    screenEnd = (today - pd.DateOffset(years=tradeYears + (folds - 1 - f))).strftime("%Y-%m-%d")
+    tradeEnd = (today - pd.DateOffset(years=(folds - 1 - f))).strftime("%Y-%m-%d")
 
-    meanProfitPos, meanProfitNeg, tradesPos, tradesNeg, deathDay, totalDays, dailyPnL, tradeProfits = profitTesting(ticker1, ticker2, pair_prices, start_date)
+    pairs = screenPairs(screenStart, screenEnd) # picks fresh pairs using only data before the trading period
 
-    results.append({
-        "pair": ticker1 + "/" + ticker2,
-        "meanProfitPos": meanProfitPos,
-        "meanProfitNeg": meanProfitNeg,
-        "tradesPos": tradesPos,
-        "tradesNeg": tradesNeg,
-        "died": "no" if deathDay == totalDays else "day " + str(deathDay),
-        "sumDailyPnL": dailyPnL.sum(), 
-        "activeDays": int((dailyPnL != 0).sum()), # how many days the pair actually had a position open
+    print("fold", f + 1, "screened", screenStart, "to", screenEnd, "- trading", screenEnd, "to", tradeEnd, "-", len(pairs), "pairs")
+
+    leadInStart = (pd.to_datetime(screenEnd) - pd.DateOffset(years=recheckLookbackYears)).strftime("%Y-%m-%d") # extra history so the rolling window and first recheck have data behind them
+
+    foldCurves = {}
+
+    for ticker1, ticker2 in pairs:
+        pair_prices = allPrices.loc[leadInStart:tradeEnd, [ticker1, ticker2]].dropna()
+
+        meanProfitPos, meanProfitNeg, tradesPos, tradesNeg, deathDay, totalDays, dailyPnL, tradeProfits = profitTesting(ticker1, ticker2, pair_prices, screenEnd)
+
+        foldCurves[ticker1 + "/" + ticker2] = dailyPnL.loc[screenEnd:tradeEnd] # cuts off the lead-in so folds don't overlap when stitched
+
+        allTrades.extend(tradeProfits)
+
+    foldTable = pd.DataFrame(foldCurves).fillna(0.0)
+
+    foldDaily = foldTable.mean(axis=1) # equal capital per pair so the portfolio move is the average
+
+    allPortfolioDaily.append(foldDaily)
+
+    foldSummaries.append({
+        "fold": f + 1,
+        "tradingFrom": screenEnd,
+        "tradingTo": tradeEnd,
+        "pairs": len(pairs),
+        "return": ((1 + foldDaily / 100).prod() - 1) * 100, # compounded within the fold to match the overall equity curve
     })
 
-    allCurves[ticker1 + "/" + ticker2] = dailyPnL
+portfolioDaily = pd.concat(allPortfolioDaily) # one continuous series across all eight trading years
 
-    allTrades.extend(tradeProfits)
+portfolioDaily = portfolioDaily[~portfolioDaily.index.duplicated(keep="first")] # guards against a shared boundary date appearing twice
 
-resultsTable = pd.DataFrame(results)
+equity = 100.0 * (1 + portfolioDaily / 100).cumprod() # compounds each day's percentage rather than just adding them up
 
-print(resultsTable.to_string(index=False))
+runningPeak = equity.cummax()
 
-curvesTable = pd.DataFrame(allCurves).fillna(0.0) # lines every pair up on shared dates, 0 on days a pair has no data or no open trade
-
-portfolioDaily = curvesTable.mean(axis=1) # each pair gets an equal share of capital so the portfolio's daily move is the average of the pairs
-
-equity = 100.0 + portfolioDaily.cumsum() # account value starting from 100
-
-runningPeak = equity.cummax() # the highest the account has been up to each day
-
-drawdowns = (equity - runningPeak) / runningPeak * 100 # how far below the peak we are on each day, as a percentage
+drawdowns = (equity - runningPeak) / runningPeak * 100
 
 maxDrawdown = drawdowns.min()
 
-print()
-print("final equity:", round(equity.iloc[-1], 3))
-print("total return:", f"{equity.iloc[-1] - 100.0:+.3f}%")
-print("max drawdown:", f"{maxDrawdown:+.3f}%")
-print("deepest below peak on:", drawdowns.idxmin().strftime("%Y-%m-%d"))
-print("worst single day:", f"{portfolioDaily.min():+.3f}%", "on", portfolioDaily.idxmin().strftime("%Y-%m-%d"))
-print("best single day:", f"{portfolioDaily.max():+.3f}%", "on", portfolioDaily.idxmax().strftime("%Y-%m-%d"))
+dailyVol = portfolioDaily.std()
 
-dailyVol = portfolioDaily.std() # how much the account's daily move typically varies
+annualVol = dailyVol * np.sqrt(252)
 
-annualVol = dailyVol * np.sqrt(252) # scales the volatility to a yearly figure in order to later calculate the sharpe ratio 
+years = len(portfolioDaily) / 252
 
-tradingDays = len(portfolioDaily)
+annualReturn = ((equity.iloc[-1] / 100.0) ** (1 / years) - 1) * 100 # the compound annual growth rate rather than a straight-line average
 
-annualReturn = (equity.iloc[-1] - 100.0) * (252 / tradingDays) # scales the return to a yearly figure in order to later calculate the sharpe ratio
-
-sharpe = annualReturn / annualVol if annualVol > 0 else 0.0 # return earned per unit of volatility
+sharpe = annualReturn / annualVol if annualVol > 0 else 0.0
 
 wins = len([t for t in allTrades if t > 0])
 
 winRate = wins / len(allTrades) * 100 if allTrades else 0.0
 
-print("annualised volatility:", str(round(annualVol, 3)) + "%")
+print()
+print(pd.DataFrame(foldSummaries).to_string(index=False))
+
+print()
+print("final equity:", round(equity.iloc[-1], 3))
+print("total return:", f"{equity.iloc[-1] - 100.0:+.3f}%")
+print("annualised return:", f"{annualReturn:+.3f}%")
+print("max drawdown:", f"{maxDrawdown:+.3f}%")
+print("deepest below peak on:", drawdowns.idxmin().strftime("%Y-%m-%d"))
+print("worst single day:", f"{portfolioDaily.min():+.3f}%", "on", portfolioDaily.idxmin().strftime("%Y-%m-%d"))
+print("best single day:", f"{portfolioDaily.max():+.3f}%", "on", portfolioDaily.idxmax().strftime("%Y-%m-%d"))
+print("annualised volatility:", f"{annualVol:.3f}%")
 print("sharpe ratio:", round(sharpe, 3))
-print("win rate:", str(round(winRate, 1)) + "%", "(" + str(wins) + " of " + str(len(allTrades)) + " trades)")
+print("win rate:", f"{winRate:.1f}%", "(" + str(wins) + " of " + str(len(allTrades)) + " trades)")
