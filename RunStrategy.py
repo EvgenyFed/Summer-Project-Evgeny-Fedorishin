@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 import os
+import matplotlib.pyplot as plt
 
 from ProfitTesting import profitTesting, recheckLookbackYears
 from PriceDataAndADF import screenPairs
@@ -95,3 +96,21 @@ print("best single day:", f"{portfolioDaily.max():+.3f}%", "on", portfolioDaily.
 print("annualised volatility:", f"{annualVol:.3f}%")
 print("sharpe ratio:", round(sharpe, 3))
 print("win rate:", f"{winRate:.1f}%", "(" + str(wins) + " of " + str(len(allTrades)) + " trades)")
+
+fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(11, 7), sharex=True, #plots a visual equity curve
+                               gridspec_kw={"height_ratios": [3, 1]})
+
+ax1.plot(equity.index, equity.values, linewidth=1.2)
+ax1.set_title(f"Pairs Trading — Walk-Forward Equity Curve ({folds} folds)")
+ax1.set_ylabel("Portfolio value (start = 100)")
+ax1.grid(alpha=0.3)
+ax1.text(0.02, 0.95,
+         f"CAGR {annualReturn:.1f}%   Vol {annualVol:.1f}%   "
+         f"Sharpe {sharpe:.2f}   MaxDD {maxDrawdown:.1f}%",
+         transform=ax1.transAxes, va="top", fontsize=9)
+
+ax2.fill_between(drawdowns.index, drawdowns.values, 0, alpha=0.4)
+ax2.set_ylabel("Drawdown (%)")
+ax2.grid(alpha=0.3)
+
+fig.savefig(os.path.join(folder, "equity_curve.png"), dpi=150, bbox_inches="tight")
