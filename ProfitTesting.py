@@ -3,6 +3,7 @@ import pandas as pd
 from datetime import datetime, timedelta
 import numpy as np
 from statsmodels.tsa.stattools import adfuller
+import Config
 
 rollingWindow = 60    # days used to compute each z-score and hedge ratio
 entryZScore = 2       # how far the spread must diverge before opening a trade
@@ -10,59 +11,94 @@ exitZScore = 0.5      # how close to zero the z-score must return before closing
 maxHoldDays = 63      # hard cap on how long a position stays open
 backtestYears = 1     # how far back the backtest starts (match yearsForwardGap in the screener)
 recheckMonths = 2          # months between follow-up cointegration tests
-recheckLookbackYears = 1   # how much trailing history each recheck tests on
+recheckLookbackYears = 2   # how much trailing history each recheck tests on
 pValueCutoff = 0.05        # recheck fails if the ADF p-value exceeds this
+executionDelay = 1    # trading days between signal and fill (0 = same close, 1 = next close)
 
 end_date = datetime.today().strftime("%Y-%m-%d")
 start_date = (pd.Timestamp.today() - pd.DateOffset(years=backtestYears)).strftime("%Y-%m-%d") # makes start date backtestYears ago from now
 
 
-def profitTesting(ticker1, ticker2, pair_prices, start_date): # calculates the z-score between two tickers over prices passed in from outside
+def profitTesting(ticker1, ticker2, pair_prices, start_date, record=None): # record holds the frozen formation parameters; None falls back to the old rolling behaviour
     backtestStart = pair_prices.index.searchsorted(pd.to_datetime(start_date)) # converts start_date into a row number so we know where the extra downloaded year ends and the tradeable period begins
 
     if (pair_prices <= 0).any().any():
-        return None, None, 0, 0, 0, 0
-    
-    allZScores = []
-    allHedgeRatios = []
-    allZScores = [np.nan] * (rollingWindow - 1) #fills the first rollingWindow-1 values of the list with placeholders so that positive/negativeZScores and allZscores match in day count
-    allHedgeRatios = [np.nan] * (rollingWindow - 1) #fills the first rollingWindow-1 values of the list with placeholders so that positive/negativeZScores and allHedgeRatios match in day count
+        return 0.0, 0.0, 0, 0, 0, 0, pd.Series(0.0, index=pair_prices.index), [], {}
 
-    for i in range(rollingWindow - 1, len(pair_prices)): # starts at rollingWindow-1 because that's when the first full window is available
+    logPrices1 = np.log(pair_prices[ticker1])
+    logPrices2 = np.log(pair_prices[ticker2])
 
-        logPrices1 = np.log(pair_prices[ticker1].iloc[i - (rollingWindow - 1):i+1]) # only takes the log prices of the ticker in the last rollingWindow days
-        logPrices2 = np.log(pair_prices[ticker2].iloc[i - (rollingWindow - 1):i+1]) # only takes the log prices of the ticker in the last rollingWindow days
+    if Config.paramMode == "fixed" and record is not None: # alpha, beta, mean and std were frozen at the end of formation and are never re-estimated here
+        beta = record["beta"]
 
-        mean1 = logPrices1.mean() # the new regression formula with the intercept not starting at 0
-        mean2 = logPrices2.mean()
+        spreadSeries = logPrices1 - record["alpha"] - beta * logPrices2
 
-        centered1 = logPrices1 - mean1
-        centered2 = logPrices2 - mean2
+        zSeries = (spreadSeries - record["spreadMean"]) / record["spreadStd"]
 
-        hedgeRatio = (centered1 * centered2).sum() / (centered2 ** 2).sum()
+        allZScores = zSeries.tolist()
+        allHedgeRatios = [beta] * len(pair_prices)
 
-        alpha = mean1 - hedgeRatio * mean2
+        formationChangeStd = record["spreadChangeStd"]
 
-        spreads = (logPrices1 - alpha - hedgeRatio * logPrices2).tolist()
+    else: # the original 60-day rolling window, kept so the fixed-vs-rolling comparison uses the same code path
+        allZScores = [np.nan] * (rollingWindow - 1) #fills the first rollingWindow-1 values of the list with placeholders so that the z-scores match the price series in day count
+        allHedgeRatios = [np.nan] * (rollingWindow - 1)
 
-        avgSpread = np.mean(spreads)
-        standardDeviation = np.std(spreads) 
+        spreadValues = [np.nan] * (rollingWindow - 1)
 
-        zScore = float((spreads[-1] - avgSpread) / standardDeviation) # calculates each z score with data from the last 60 days not from the whole data set
+        for i in range(rollingWindow - 1, len(pair_prices)): # starts at rollingWindow-1 because that's when the first full window is available
 
-        allZScores.append(zScore)
-        allHedgeRatios.append(hedgeRatio) # tracks the daily hedge ratio as it's not static anymore
+            windowLog1 = logPrices1.iloc[i - (rollingWindow - 1):i+1]
+            windowLog2 = logPrices2.iloc[i - (rollingWindow - 1):i+1]
+
+            mean1 = windowLog1.mean()
+            mean2 = windowLog2.mean()
+
+            centered1 = windowLog1 - mean1
+            centered2 = windowLog2 - mean2
+
+            hedgeRatio = (centered1 * centered2).sum() / (centered2 ** 2).sum()
+
+            alpha = mean1 - hedgeRatio * mean2
+
+            spreads = (windowLog1 - alpha - hedgeRatio * windowLog2).tolist()
+
+            standardDeviation = np.std(spreads)
+
+            if standardDeviation == 0:
+                allZScores.append(np.nan)
+                allHedgeRatios.append(hedgeRatio)
+                spreadValues.append(spreads[-1])
+                continue
+
+            allZScores.append(float((spreads[-1] - np.mean(spreads)) / standardDeviation))
+            allHedgeRatios.append(hedgeRatio)
+            spreadValues.append(spreads[-1])
+
+        spreadSeries = pd.Series(spreadValues, index=pair_prices.index)
+
+        formationChangeStd = spreadSeries.diff().iloc[:backtestStart].std()
+
+    volRatio = pd.Series(np.nan, index=pair_prices.index) # recent spread volatility measured against the formation period
+
+    if formationChangeStd and formationChangeStd > 0:
+        recentVol = spreadSeries.diff().rolling(Config.volWindow).std().shift(1) # the shift keeps today's move out of today's entry decision
+        volRatio = recentVol / formationChangeStd
+
+    volRatioValues = volRatio.tolist()
     
     lookbackDays = int(recheckLookbackYears * 252)
     recheckSpacing = int(recheckMonths * 21)
 
     deathDay = len(pair_prices) # the day the pair stops being tradeable, defaults to never
 
-    for d in range(backtestStart, len(pair_prices), recheckSpacing): # reruns the cointegration test every recheckMonths
+    recheckDays = range(backtestStart + recheckSpacing, len(pair_prices), recheckSpacing) if Config.recheckMode != "off" else []
+
+    for d in recheckDays:
         windowStart = max(0, d - lookbackDays + 1)
 
-        recheckLog1 = np.log(pair_prices[ticker1].iloc[windowStart:d+1])
-        recheckLog2 = np.log(pair_prices[ticker2].iloc[windowStart:d+1])
+        recheckLog1 = logPrices1.iloc[windowStart:d+1]
+        recheckLog2 = logPrices2.iloc[windowStart:d+1]
 
         rMean1 = recheckLog1.mean()
         rMean2 = recheckLog2.mean()
@@ -72,112 +108,143 @@ def profitTesting(ticker1, ticker2, pair_prices, start_date): # calculates the z
 
         recheckSpread = recheckLog1 - rAlpha - rHedgeRatio * recheckLog2
 
+        if recheckSpread.std() == 0:
+            deathDay = d
+            break
+
         _, recheckPValue, _, _, _, _ = adfuller(recheckSpread)
 
         if recheckPValue > pValueCutoff: # pair is no longer cointegrated so it dies here and stays dead
             deathDay = d
             break
 
-    positiveZScores = {}
-    negativeZScores = {}
-
-    for i in range(backtestStart, deathDay): # now only signals high z-score inside the real profit testing period and before the pair dies 
-
-        if abs(allZScores[i]) >= entryZScore and allZScores[i] >= 0:
-            positiveZScores[i] = allZScores[i] # sell stock 1 and buy stock 2
-        elif abs(allZScores[i]) >= entryZScore and allZScores[i] <= 0:
-            negativeZScores[i] = allZScores[i] # buy stock 1 and sell stock 2
-    
     allSignals = {}
-    allSignals.update(positiveZScores)
-    allSignals.update(negativeZScores) # merges both directions so one pass can walk them in date order
+
+    for i in range(backtestStart, deathDay): # now only signals high z-score inside the real profit testing period and before the pair dies
+        z = allZScores[i]
+
+        if z is None or np.isnan(z):
+            continue
+
+        if abs(z) >= entryZScore:
+            allSignals[i] = z # positive means sell stock 1 and buy stock 2, negative means the other way round
 
     totalProfitPos = []
     totalProfitNeg = []
+    exitReasons = {}
 
     freeUntil = -1 #allows us to skip days where our position is already opened to avoid bying into the same postion on consecutive days
 
     dailyPnL = pd.Series(0.0, index=pair_prices.index) # how much the pair gained or lost each day, indexed by date so pairs can be lined up later, stays 0 when no trade is open
 
+    lastTradableDay = len(pair_prices) - 1 - executionDelay
+
     for key in sorted(allSignals.keys()): # goes through every signal day in date order regardless of direction
-        if key + maxHoldDays >= len(pair_prices) or key < freeUntil:
+
+        if key > lastTradableDay or key < freeUntil:
+            continue
+
+        if Config.useZStop and abs(allSignals[key]) >= Config.zStopLevel: # already past the stop level, so don't open a trade we'd immediately stop out of
+            continue
+
+        if Config.useVolFilter: # blocks NEW entries only, open positions keep running on the normal exit rules
+            ratio = volRatioValues[key]
+            if not np.isnan(ratio) and ratio > Config.volThreshold:
+                continue
+
+        direction = -1 if allSignals[key] >= 0 else 1 # -1 shorts stock 1 and longs stock 2, +1 does the reverse
+
+        beta = allHedgeRatios[key]
+
+        if beta is None or np.isnan(beta) or beta <= 0:
             continue
 
         daysPassed = 0
+        exitReason = "timeLimit"
 
-        if allSignals[key] >= 0: # positive z-score so short stock 1 and long stock 2
+        while True: # walks forward day by day until one of the exit rules fires
+            if daysPassed == maxHoldDays:
+                exitReason = "timeLimit"
+                break
 
-            sellingPrice1 = pair_prices[ticker1].iloc[key] # shorts stock 1
-            buyingPrice2 = pair_prices[ticker2].iloc[key] # goes long on stock 2
+            if Config.recheckMode == "exit" and key + daysPassed >= deathDay: # blockEntry lets open trades run to their normal exit instead of crystallising the loss here
+                exitReason = "pairDeath"
+                break
 
-            while daysPassed != maxHoldDays and key + daysPassed < deathDay and allZScores[key+daysPassed] >= exitZScore: # doesn't exit postions until 63 trading days(3 months) have passed or the z-score has reverted
-                daysPassed += 1
-                continue
+            if key + daysPassed > lastTradableDay:
+                exitReason = "endOfData"
+                break
 
-            freeUntil = key + daysPassed
+            z = allZScores[key + daysPassed]
 
-            buyingPrice1 = pair_prices[ticker1].iloc[key+daysPassed] # buys back ticker 1 when either of those two conditions is met
-            profit1 = (sellingPrice1 - buyingPrice1) / sellingPrice1
+            if np.isnan(z):
+                exitReason = "noSignal"
+                break
 
-            sellingPrice2 = pair_prices[ticker2].iloc[key+daysPassed] # sells ticker 2 when either of those two conditions is met
-            profit2 = ((sellingPrice2 - buyingPrice2) / buyingPrice2) * allHedgeRatios[key]
+            if Config.useZStop and daysPassed >= 1 and abs(z) >= Config.zStopLevel: # observed at today's close, filled at the next close like every other signal
+                exitReason = "zStop"
+                break
 
-            totalProfitPos.append(((profit1 + profit2) / (1 + abs(allHedgeRatios[key]))) * 100)
+            if direction == -1 and z < exitZScore:
+                exitReason = "converged"
+                break
 
-            cumulative = 0.0
+            if direction == 1 and z > -exitZScore:
+                exitReason = "converged"
+                break
 
-            for d in range(key + 1, key + daysPassed + 1): # walks through each day the trade was open to record its daily change
-                runningProfit1 = (sellingPrice1 - pair_prices[ticker1].iloc[d]) / sellingPrice1
-                runningProfit2 = ((pair_prices[ticker2].iloc[d] - buyingPrice2) / buyingPrice2) * allHedgeRatios[key]
+            daysPassed += 1
 
-                newCumulative = ((runningProfit1 + runningProfit2) / (1 + abs(allHedgeRatios[key]))) * 100
+        entryDay = key + executionDelay
+        exitDay = min(key + daysPassed + executionDelay, len(pair_prices) - 1)
 
-                dailyPnL.iloc[d] = newCumulative - cumulative # only the change since yesterday, not the running total
-                cumulative = newCumulative
+        if exitDay <= entryDay:
+            continue
 
-        else: # negative z-score so long stock 1 and short stock 2
+        freeUntil = exitDay
 
-            buyingPrice1 = pair_prices[ticker1].iloc[key] # goes long on stock 1
-            sellingPrice2 = pair_prices[ticker2].iloc[key] # shorts stock 2
+        entryPrice1 = pair_prices[ticker1].iloc[entryDay]
+        entryPrice2 = pair_prices[ticker2].iloc[entryDay]
 
-            while daysPassed != maxHoldDays and key + daysPassed < deathDay and allZScores[key+daysPassed] <= -exitZScore: # doesn't exit postions until 63 trading days(3 months) have passed or the z-score has reverted
-                daysPassed += 1
-                continue
+        def markedReturn(day): # direction * [ r1 - beta*r2 ] / (1+|beta|), the same convention on both legs
+            r1 = pair_prices[ticker1].iloc[day] / entryPrice1 - 1.0
+            r2 = pair_prices[ticker2].iloc[day] / entryPrice2 - 1.0
+            return direction * ((r1 - beta * r2) / (1 + abs(beta))) * 100
 
-            freeUntil = key + daysPassed
+        tradeReturn = markedReturn(exitDay)
 
-            sellingPrice1 = pair_prices[ticker1].iloc[key+daysPassed] # sells ticker 1 when either of those two conditions is met
-            profit1 = (sellingPrice1 - buyingPrice1) / buyingPrice1
+        exitReasons.setdefault(exitReason, []).append(tradeReturn) # files every trade's return under the reason it closed
 
-            buyingPrice2 = pair_prices[ticker2].iloc[key+daysPassed] # buys back ticker 2 when either of those two conditions is met
-            profit2 = ((sellingPrice2 - buyingPrice2) / sellingPrice2) * allHedgeRatios[key]
+        if direction == -1:
+            totalProfitPos.append(tradeReturn)
+        else:
+            totalProfitNeg.append(tradeReturn)
 
-            totalProfitNeg.append(((profit1 + profit2) / (1 + abs(allHedgeRatios[key]))) * 100)
+        cumulative = 0.0
 
-            cumulative = 0.0
-
-            for d in range(key + 1, key + daysPassed + 1): # walks through each day the trade was open to record its daily change
-                runningProfit1 = (pair_prices[ticker1].iloc[d] - buyingPrice1) / buyingPrice1
-                runningProfit2 = ((sellingPrice2 - pair_prices[ticker2].iloc[d]) / sellingPrice2) * allHedgeRatios[key]
-
-                newCumulative = ((runningProfit1 + runningProfit2) / (1 + abs(allHedgeRatios[key]))) * 100
-
-                dailyPnL.iloc[d] = newCumulative - cumulative # only the change since yesterday, not the running total
-                cumulative = newCumulative
+        for d in range(entryDay + 1, exitDay + 1): # walks through each day the trade was open to record its daily change
+            newCumulative = markedReturn(d)
+            dailyPnL.iloc[d] = newCumulative - cumulative # only the change since yesterday, not the running total
+            cumulative = newCumulative
 
     meanProfitPos = np.mean(totalProfitPos) if totalProfitPos else 0.0
     meanProfitNeg = np.mean(totalProfitNeg) if totalProfitNeg else 0.0
 
-    return float(meanProfitPos), float(meanProfitNeg), len(totalProfitPos), len(totalProfitNeg), deathDay, len(pair_prices), dailyPnL, totalProfitPos + totalProfitNeg #added length to see how many trades were actually completed so that we can see how realiable the strategy actually is, plus deathDay to check the recheck logic, dailyPnL for the equity curve and every individual trade profit for the win rate
+    return float(meanProfitPos), float(meanProfitNeg), len(totalProfitPos), len(totalProfitNeg), deathDay, len(pair_prices), dailyPnL, totalProfitPos + totalProfitNeg, exitReasons
 
 if __name__ == "__main__": # only runs when this file is executed directly, not when it's imported
     downloadStart = (pd.to_datetime(start_date) - pd.DateOffset(years=recheckLookbackYears)).strftime("%Y-%m-%d") # pulls extra history so the first recheck has a full lookback behind it
 
-    prices = yf.download(['MSCI','PYPL'], start=downloadStart, end=end_date, auto_adjust=True)["Close"]
+    from PriceDataAndADF import screenPairs
 
-    pair_prices = prices[['MSCI','PYPL']].dropna()
+    records = screenPairs("2018-08-20", "2020-08-20")
 
-    print(profitTesting('MSCI','PYPL', pair_prices, start_date))
+    allPrices = pd.read_pickle("prices.pkl")
+
+    for record in records[:3]:
+        t1, t2 = record["ticker1"], record["ticker2"]
+        pair_prices = allPrices.loc["2018-08-20":"2021-08-20", [t1, t2]].dropna()
+        print(t1, t2, profitTesting(t1, t2, pair_prices, "2020-08-20", record)[:4])
 
 
 

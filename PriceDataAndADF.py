@@ -5,6 +5,7 @@ import time
 import numpy as np
 import os
 from statsmodels.tsa.stattools import adfuller
+import Config
 
 folder = os.path.dirname(os.path.abspath(__file__)) # the folder this script lives in so the cached files are found no matter where you run from
 
@@ -18,13 +19,55 @@ allPrices = pd.read_pickle(os.path.join(folder, "prices.pkl")) # the 10 year pri
 sectors = pd.read_pickle(os.path.join(folder, "sectors.pkl")) # the sector groupings built by DownloadPrices.py
 
 
-def screenPairs(start_date, end_date): # runs the cointegration scan over one window and returns the best pairs
+def fitPair(logPrices1, logPrices2): # one regression: returns the intercept, hedge ratio and residual spread
+    mean1 = logPrices1.mean()
+    mean2 = logPrices2.mean()
+
+    centered1 = logPrices1 - mean1
+    centered2 = logPrices2 - mean2
+
+    denominator = (centered2 ** 2).sum()
+
+    if denominator == 0:
+        return None
+
+    hedgeRatio = (centered1 * centered2).sum() / denominator
+
+    alpha = mean1 - hedgeRatio * mean2
+
+    spread = logPrices1 - alpha - hedgeRatio * logPrices2
+
+    return alpha, hedgeRatio, spread
+
+
+def halfLife(spread): # how many days a deviation takes to decay by half
+    values = np.asarray(spread, dtype=float)
+
+    if len(values) < 30:
+        return np.nan
+
+    lagged = values[:-1]
+    change = np.diff(values)
+
+    X = np.column_stack([np.ones(len(lagged)), lagged])
+
+    coefficients, _, _, _ = np.linalg.lstsq(X, change, rcond=None)
+
+    gamma = coefficients[1]
+    phi = 1.0 + gamma
+
+    if 0 < phi < 1: # anything else means the spread is not mean reverting at all
+        return float(np.log(2.0) / -np.log(phi))
+
+    return np.nan
+
+
+def screenPairs(start_date, end_date): # runs the cointegration scan over one window and returns a frozen record per surviving pair
     minObs = int((pd.to_datetime(end_date) - pd.to_datetime(start_date)).days / 365 * 252 * minObsFraction) # scales the overlapping data requirment to the number of days we sample
 
     prices = allPrices.loc[start_date:end_date] # slices the cache down to the screening window instead of downloading
 
-    beta = {}
-    pvals ={}
+    records = []
 
     for sector in sectors: #used to cycle through sectors
         for j in range(len(sectors[sector])): #used to cycle through first tickers
@@ -47,41 +90,79 @@ def screenPairs(start_date, end_date): # runs the cointegration scan over one wi
                 logPrices1 = np.log(pair_prices[ticker1])
                 logPrices2 = np.log(pair_prices[ticker2])
 
+                fit = fitPair(logPrices1, logPrices2)
 
-                mean1 = logPrices1.mean() # now we use the new regression formula with the intercept not starting at 0
-                mean2 = logPrices2.mean()
+                if fit is None:
+                    continue
 
-                centered1 = logPrices1 - mean1
-                centered2 = logPrices2 - mean2
+                alpha, hedgeRatio, spread = fit
 
-                hedgeRatio = (centered1 * centered2).sum() / (centered2 ** 2).sum()
+                if hedgeRatio <= 0: # a negative hedge ratio holds both legs the same way round, which is a directional bet not a pairs trade
+                    continue
 
-                alpha = mean1 - hedgeRatio * mean2
+                if spread.std() == 0:
+                    continue
 
-                spread = (logPrices1 - alpha - hedgeRatio * logPrices2)
-            
                 adfStat, pValue, _, _, _, _ = adfuller(spread) #extracts the pValue as well now
 
-                if pValue <= pValueCutoff: #added the pValue check for signficance testing
-                    beta[ticker1, ticker2] = adfStat
-                    pvals[ticker1, ticker2] = pValue
+                if pValue > pValueCutoff: #added the pValue check for signficance testing
+                    continue
 
-    def getPValue(item): 
-        return pvals[item[0]]
+                halfPoint = len(pair_prices) // 2 # the two halves used by the stability filter
 
-    sortedBeta = sorted(beta.items(), key=getPValue)
+                firstFit = fitPair(logPrices1.iloc[:halfPoint], logPrices2.iloc[:halfPoint])
+                secondFit = fitPair(logPrices1.iloc[halfPoint:], logPrices2.iloc[halfPoint:])
 
-    top10 = sortedBeta[:topN]
+                stable = False
 
-    return [pair for pair, value in top10] # just the ticker pairs, ready to hand to the backtest
+                if firstFit is not None and secondFit is not None:
+                    if firstFit[1] > 0 and secondFit[1] > 0 and firstFit[2].std() > 0 and secondFit[2].std() > 0:
+                        _, firstP, _, _, _, _ = adfuller(firstFit[2])
+                        _, secondP, _, _, _, _ = adfuller(secondFit[2])
+                        stable = firstP <= Config.halfPValueCutoff and secondP <= Config.halfPValueCutoff
+
+                if Config.useStability and not stable: # only bites when the flag is on, so the baseline is unaffected
+                    continue
+
+                pairHalfLife = halfLife(spread)
+
+                if Config.useHalfLife:
+                    if np.isnan(pairHalfLife):
+                        continue
+                    if pairHalfLife < Config.halfLifeMin or pairHalfLife > Config.halfLifeMax:
+                        continue
+
+                records.append({
+                    "ticker1": ticker1,
+                    "ticker2": ticker2,
+                    "alpha": float(alpha),
+                    "beta": float(hedgeRatio),
+                    "spreadMean": float(spread.mean()),
+                    "spreadStd": float(spread.std()),
+                    "spreadChangeStd": float(spread.diff().dropna().std()), # the formation volatility the vol filter compares against
+                    "halfLife": pairHalfLife,
+                    "stable": stable,
+                    "adfStat": float(adfStat),
+                    "pValue": float(pValue),
+                })
+
+    def getPValue(record):
+        return record["pValue"]
+
+    records.sort(key=getPValue)
+
+    return records[:topN] # frozen formation records, ready to hand to the backtest
 
 
 if __name__ == "__main__": # only runs when this file is executed directly, not when it's imported
     end_date = (pd.Timestamp.today() - pd.DateOffset(years=yearsForwardGap)).strftime("%Y-%m-%d")
     start_date = (pd.Timestamp.today() - pd.DateOffset(years=yearsBack)).strftime("%Y-%m-%d")
 
-    for pair in screenPairs(start_date, end_date):
-        print(pair)
+    for record in screenPairs(start_date, end_date):
+        print(record["ticker1"], record["ticker2"],
+              "beta", round(record["beta"], 3),
+              "halfLife", round(record["halfLife"], 1) if not np.isnan(record["halfLife"]) else "na",
+              "stable", record["stable"])
 
 
 
